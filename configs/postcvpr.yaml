@@ -22,7 +22,7 @@ runner:
       density_max: 7e-1
 
 dataloader:
-  num_workers: 8
+  num_workers: 0
   batch_size: 1
   pyg_data: True
   dataset:
@@ -62,4 +62,4 @@ model:
     k_world_edges: 1
     n_coarse_levels: 3
 
-device: 'cuda:0'
+device: 'cuda:1'
