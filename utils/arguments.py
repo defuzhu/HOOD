@@ -72,7 +72,7 @@ def load_module(module_type: str, module_config: DictConfig, module_name: str = 
     return module
 
 
-def load_params(config_name: str=None, config_dir: str=None):
+def load_params(config_name: str=None, config_dir: str=None, overrides=None):
     """
     Build OmegaConf config and the modules from the config file.
     :param config_name: name of the config file (without .yaml)
@@ -101,6 +101,10 @@ def load_params(config_name: str=None, config_dir: str=None):
     OmegaConf.set_struct(conf, False)
     OmegaConf.set_struct(conf_file, False)
     conf = OmegaConf.merge(conf, conf_file)
+
+    # Opt-in overrides used by the recorded baseline entrypoint. Legacy CLI stays unchanged.
+    if overrides is not None:
+        conf = OmegaConf.merge(conf, overrides)
 
     # Load modules from config
     modules = {}

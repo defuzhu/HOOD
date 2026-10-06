@@ -268,18 +268,20 @@ class Runner(nn.Module):
         return sample_step
 
     def optimizer_step(self, loss_dict, optimizer=None, scheduler=None):
+        grad_norm = None
         if optimizer is not None:
             loss = sum(loss_dict.values())
             optimizer.zero_grad()
             loss.backward()
             if self.mcfg.grad_clip is not None:
-                torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.mcfg.grad_clip)
+                grad_norm = torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.mcfg.grad_clip)
 
             optimizer.step()
             if scheduler is not None:
                 scheduler.step()
+        return grad_norm
 
-    def forward(self, sample, roll_steps=1, optimizer=None, scheduler=None) -> dict:
+    def forward(self, sample, roll_steps=1, optimizer=None, scheduler=None, step_callback=None) -> dict:
 
         # for the first 5000 steps, we randomly chose between initial and regular timesteps so that model does not overfit
         # Then, we always use initial timestep for the first frame and regular timestep for the rest of the frames
@@ -299,7 +301,12 @@ class Runner(nn.Module):
             loss_dict = self.criterion_pass(sample_step)
             prev_out_sample = sample_step.detach()
 
-            self.optimizer_step(loss_dict, optimizer, scheduler)
+            if step_callback is not None and not all(torch.isfinite(v).all() for v in loss_dict.values()):
+                raise FloatingPointError("Non-finite physical loss before optimizer update")
+            lr_used = optimizer.param_groups[0]["lr"] if optimizer is not None else None
+            grad_norm = self.optimizer_step(loss_dict, optimizer, scheduler)
+            if step_callback is not None:
+                step_callback(i, sample_step, loss_dict, lr_used, grad_norm)
 
         ld_to_write = {k: v.item() for k, v in loss_dict.items()}
         return ld_to_write
