@@ -50,7 +50,9 @@ as an independent server service; completion/failure is reflected in metadata.
 The three tshirt sequences end in CMU motion IDs `01_01`, `07_02`, `104_54`.
 The entrypoint checks these MOTIONS do not occur in the training split, including other shapes/garments.
 Original sequence betas are used, noise is zero, material is fixed, graph centers are reproducible.
-120 predictions are evaluated at step 0, every 5,000 batches, and at the final step.
+Up to 120 predictions are evaluated at step 0, every 5,000 batches, and at the final step.
+The current three sequences provide 120, 81 and 61 steps respectively; the manifest
+records these exact lengths so every method uses the same frames.
 Validation uses a separate runner with copied weights/statistics under no_grad, preserving training
 Python/NumPy/CPU/CUDA RNG states and training normalizer/cache state. No optimizer runs in validation.
 
@@ -91,3 +93,19 @@ This exercises warmup, actual backward/Adam, checkpoints and isolated fixed vali
 Run `python -m unittest discover -s tests` for recording/RNG checks.
 Set `HOOD_INTEGRATION=1` to also check exact CPU training equivalence with/without
 logging and repeated CUDA fixed validation without mutating training state.
+
+## Current server run
+
+The full seed-57 run is managed by `hood-baseline-seed57-20261006.service` on GPU 0.
+User lingering is enabled so the service continues after SSH logout. The launch log is
+`$HOOD_PROJECT/training_runs/baseline_seed57_20261006.log`; its RUN_DIR line identifies
+the exclusive experiment directory. Both GPUs are shared with other server tasks.
+
+```bash
+systemctl --user status hood-baseline-seed57-20261006.service --no-pager
+tail -n 5 /absolute/path/to/run/logs/train.csv
+python plot_baseline.py /absolute/path/to/run
+```
+
+The completed legacy checkpoint evaluation is stored separately with the name
+`legacy_baseline_eval`; it supplies reference rollouts and metrics, not lost training logs.
