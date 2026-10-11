@@ -1,5 +1,8 @@
 # Recorded postcvpr baseline
 
+**Updated 2026-10-11:** the current commands, schema-2 resume and independent common
+evaluator are documented in [EXPERIMENT_SYSTEM.md](EXPERIMENT_SYSTEM.md).
+
 The original `train.py`, YAML and all six physical criterion formulas remain available.
 `train_baseline.py` adds recording and a fixed validation protocol. Runner observation is opt-in:
 it does not change loss values, rollout detach, clipping, Adam or per-substep updates.
@@ -57,10 +60,11 @@ Validation uses a separate runner with copied weights/statistics under no_grad, 
 Python/NumPy/CPU/CUDA RNG states and training normalizer/cache state. No optimizer runs in validation.
 
 Physical losses are reported per frame, with initialization separated from regular-frame means.
-The original valid_rollout sets iter=0: validation collision weight is therefore always
-weight_start (5,000), independent of the training ramp. This stays fixed across checkpoints.
-Additional metrics: approximate penetration fraction/depth, principal strain/stretch and pinned error.
-Penetration is the original nearest-face-center normal approximation: NOT exact SDF or CCD.
+The common evaluator now uses original constitutive models and a unit-weight signed-mesh
+cubic contact diagnostic, independent of each variant's training contact potential.
+It records both finite-triangle/winding mesh penetration and the historical face-center
+approximation, principal strain/stretch, pinned error and synchronized inference timing.
+These are vertex-sample metrics, not CCD or complete triangle-intersection certification.
 No VTO garment ground-truth MSE is reported. These three sequences are a reproducible small benchmark,
 not a claim of broad validation across all garments or independently calibrated material accuracy.
 
@@ -78,9 +82,10 @@ evaluation does not fabricate training history. A true fixed comparison uses the
 material, seed, metrics and compute budget across methods. Total loss alone is not comparable after changing
 energy models. Track each physical term and geometry plus rollout video.
 
-Checkpoints include optimizer/scheduler state, but exact mid-epoch resumption is deliberately not implemented:
-sampler/worker RNG state is absent. The new trainer refuses resume-looking training settings rather than
-silently restarting a warm-start run. The original train.py remains available for legacy usage.
+New schema-2 checkpoints include optimizer/scheduler, RNG, sampler and cloth/dataset caches
+for batch-boundary continuation through `resume=...`. Historical checkpoints lack these
+states and remain evaluation/fine-tune inputs. The original train.py remains available
+for legacy usage; use the recorded entrypoint for new reproducible experiments.
 
 ## Short integration check
 
@@ -94,9 +99,10 @@ Run `python -m unittest discover -s tests` for recording/RNG checks.
 Set `HOOD_INTEGRATION=1` to also check exact CPU training equivalence with/without
 logging and repeated CUDA fixed validation without mutating training state.
 
-## Current server run
+## Historical server run
 
-The full seed-57 run is managed by `hood-baseline-seed57-20261006.service` on GPU 0.
+The full seed-57 run completed 60,000 batches. It was managed by
+`hood-baseline-seed57-20261006.service` on GPU 0.
 User lingering is enabled so the service continues after SSH logout. The launch log is
 `$HOOD_PROJECT/training_runs/baseline_seed57_20261006.log`; its RUN_DIR line identifies
 the exclusive experiment directory. Both GPUs are shared with other server tasks.

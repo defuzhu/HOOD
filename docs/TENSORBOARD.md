@@ -39,6 +39,11 @@ The x-axis is the outer `global_step`, not the count of optimizer updates.
 Separate tags generate separate charts; selecting multiple runs overlays the
 same metric for ablations. Raw CSV retains every rollout substep.
 
+New recorded runs also include `train_state/optimizer_step_count`, actual updates
+in the batch, synchronized batch time, and `contact/*` raw loss/geometry/barrier
+diagnostics. See [EXPERIMENT_SYSTEM.md](EXPERIMENT_SYSTEM.md) for complete fields
+and comparisons aligned by actual optimizer updates.
+
 Baseline penetration metrics named `approx_*` use the historical plane
 approximation. Never compare these numerically against the new `mesh_*` metric
 as though they were the same measurement. Changing contact potential also makes
