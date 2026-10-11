@@ -15,16 +15,23 @@ class Config:
     start_rampup_iteration: int = 50000
     n_rampup_iterations: int = 100000
     eps: float = 1e-3
+    contact_geometry: str = 'legacy_plane'
+    point_chunk: int = 256
+    face_chunk: int = 2048
+    min_triangle_area: float = 1e-12
 
 
 def create(mcfg):
     return Criterion(weight_start=mcfg.weight_start, weight_max=mcfg.weight_max,
                      start_rampup_iteration=mcfg.start_rampup_iteration, n_rampup_iterations=mcfg.n_rampup_iterations,
-                     eps=mcfg.eps)
+                     eps=mcfg.eps, contact_geometry=mcfg.contact_geometry,
+                     point_chunk=mcfg.point_chunk, face_chunk=mcfg.face_chunk,
+                     min_triangle_area=mcfg.min_triangle_area)
 
 
 class Criterion(nn.Module):
-    def __init__(self, weight_start, weight_max, start_rampup_iteration, n_rampup_iterations, eps=1e-3):
+    def __init__(self, weight_start, weight_max, start_rampup_iteration, n_rampup_iterations, eps=1e-3,
+                 contact_geometry='legacy_plane', point_chunk=256, face_chunk=2048, min_triangle_area=1e-12):
         super().__init__()
         self.weight_start = weight_start
         self.weight_max = weight_max
@@ -33,6 +40,13 @@ class Criterion(nn.Module):
         self.eps = eps
         self.f_normals_f = FaceNormals()
         self.name = 'collision_penalty'
+        if contact_geometry not in ['legacy_plane', 'signed_mesh']:
+            raise ValueError('contact_geometry must be legacy_plane or signed_mesh')
+        self.contact_geometry = contact_geometry
+        self.mesh_distance = None
+        if contact_geometry == 'signed_mesh':
+            from utils.contact_geometry import ClosedMeshDistance
+            self.mesh_distance = ClosedMeshDistance(point_chunk, face_chunk, min_triangle_area)
 
     def get_weight(self, iter):
         iter = iter - self.start_rampup_iteration
@@ -49,6 +63,12 @@ class Criterion(nn.Module):
 
         curr_pos = example['cloth'].pos
         next_pos = example['cloth'].pred_pos
+
+        if self.mesh_distance is not None:
+            # Re-select the globally nearest triangle at the predicted/target
+            # state; unlike legacy_plane this does not lag the correspondence.
+            distance = self.mesh_distance(next_pos, obstacle_next_pos, obstacle_faces)['signed_distance']
+            return (self.eps - distance).clamp_min(0).pow(3).sum()
 
         # Find correspondences in current step
         obstacle_face_curr_pos = gather(obstacle_curr_pos, obstacle_faces, 0, 1, 1).mean(dim=-2)

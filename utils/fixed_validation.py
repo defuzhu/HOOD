@@ -21,7 +21,7 @@ def motion_id(sequence):
     return '_'.join(Path(sequence).stem.split('_')[-2:])
 
 
-def geometry_metrics(state):
+def geometry_metrics(state, contact_query=None):
     cloth, body = state['cloth'], state['obstacle']
     y = cloth.pred_pos
     faces = body.faces_batch.T
@@ -35,7 +35,7 @@ def geometry_metrics(state):
     singular_values = torch.linalg.svdvals(get_shape_matrix(triangles) @ cloth.Dm_inv)
     handles = cloth.vertex_type[:, 0] == NodeType.HANDLE
     pin_error = torch.linalg.vector_norm(y[handles] - cloth.target_pos[handles], dim=-1)
-    return {
+    metrics = {
         # This is the original face-center/normal approximation, not exact penetration or CCD.
         'approx_penetration_fraction': (signed < 0).float().mean(),
         'approx_penetration_depth_mean_m': depth.mean(),
@@ -45,11 +45,28 @@ def geometry_metrics(state):
         'principal_strain_rms': ((singular_values - 1) ** 2).mean().sqrt(),
         'pinned_error_max_m': pin_error.max() if handles.any() else y.new_tensor(0.),
     }
+    if contact_query is not None:
+        signed_mesh = contact_query(y, body.target_pos, faces)['signed_distance']
+        depth_mesh = (-signed_mesh).clamp_min(0)
+        free = ~handles
+        metrics.update({
+            'mesh_vertex_penetration_fraction': (signed_mesh < -1e-7).float().mean(),
+            'mesh_vertex_penetration_depth_mean_m': depth_mesh.mean(),
+            'mesh_vertex_penetration_depth_max_m': depth_mesh.max(),
+            'mesh_vertex_clearance_min_m': signed_mesh.min(),
+            'mesh_free_vertex_penetration_fraction': (signed_mesh[free] < -1e-7).float().mean()
+                if free.any() else y.new_tensor(0.),
+        })
+    return metrics
 
 
 class FixedValidation:
     def __init__(self, modules, cfg, run_dir):
         self.cfg, self.root = cfg, Path(run_dir)
+        self.contact_query = None
+        if cfg.validation.get('contact_geometry_metrics', False):
+            from utils.contact_geometry import ClosedMeshDistance
+            self.contact_query = ClosedMeshDistance()
         entries = list(cfg.validation.sequences)
         if not entries:
             raise ValueError('Fixed validation requires at least one sequence')
@@ -94,6 +111,11 @@ class FixedValidation:
                     'sequences': self.records, 'training_split': file_record(train_path),
                     'metric_note': 'Penetration metrics approximate nearest face centers and normals; '
                                    'not exact signed distance, CCD or supervised trajectory error.'}
+        if self.contact_query is not None:
+            manifest['contact_metric_note'] = ('mesh_* metrics use global nearest point-triangle distances '
+                                              'and winding signs. Vertex samples only, not edge/face '
+                                              'intersection tests or CCD; self-intersecting bodies retain '
+                                              'winding semantics.')
         write_json(self.root / 'validation_manifest.json', manifest)
         OmegaConf.save(vcfg, self.root / 'validation_config.yaml', resolve=True)
 
@@ -107,7 +129,8 @@ class FixedValidation:
             original_criterion = self.runner.criterion_pass
             def criterion_with_geometry(state):
                 physics = original_criterion(state)
-                return {**physics, 'total_physical_loss': sum(physics.values()), **geometry_metrics(state)}
+                return {**physics, 'total_physical_loss': sum(physics.values()),
+                        **geometry_metrics(state, self.contact_query)}
             self.runner.criterion_pass = criterion_with_geometry
             try:
                 for sequence_id, garment, sequence, n_steps in self.sequences:
