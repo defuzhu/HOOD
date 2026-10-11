@@ -55,6 +55,16 @@ class ContactGeometryTest(unittest.TestCase):
         self.assertLess(int(result['face_index']), 4)
         torch.testing.assert_close(result['signed_distance'], torch.tensor([.0005]))
 
+    def test_small_meter_scale_triangles_use_finite_edge_distance(self):
+        # At this scale, an unscaled point-face barycentric kernel can mistake
+        # the extension of the triangle plane for the triangle itself.
+        v, f = tetrahedron()
+        v *= 1e-3
+        p = torch.tensor([[.5e-3, -.3e-3, -.2e-3]])
+        result = ClosedMeshDistance()(p, v, f)
+        torch.testing.assert_close(result['unsigned_distance'], torch.tensor([(.13 ** .5) * 1e-3]),
+                                   atol=1e-7, rtol=1e-5)
+
     def test_sign_does_not_depend_on_global_face_orientation(self):
         v, f = tetrahedron()
         p = torch.tensor([[.1, .1, .1], [.2, .2, -.3]])

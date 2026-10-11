@@ -110,11 +110,23 @@ class ClosedMeshDistance:
         with torch.no_grad():
             if not (torch.isfinite(points).all() and torch.isfinite(vertices).all()):
                 raise FloatingPointError('Non-finite contact geometry')
+            # PyTorch3D's barycentric kernel adds an absolute 1e-8 to its Gram
+            # determinant. In meter-scale SMPL meshes, tiny faces can therefore
+            # be treated as infinite planes. Normalize the body extent before
+            # querying, and scale the area tolerance with it. This leaves the
+            # minimizing triangle unchanged while keeping the kernel well-scaled.
+            origin = vertices.mean(0)
+            extent = (vertices.max(0).values - vertices.min(0).values).max()
+            if not torch.isfinite(extent) or extent <= 0:
+                raise ValueError('Body mesh must have positive finite extent')
+            scale = 100. / extent
+            scaled_points = ((points.detach() - origin) * scale).float().contiguous()
+            scaled_triangles = ((triangles.detach() - origin) * scale).float().contiguous()
             # All faces participate. A nearest-centroid shortlist is NOT used.
             first = torch.zeros(1, dtype=torch.long, device=points.device)
             _, indices = _C.point_face_dist_forward(
-                points.detach().float().contiguous(), first,
-                triangles.detach().float().contiguous(), first, len(points), self.min_triangle_area)
+                scaled_points, first, scaled_triangles, first, len(points),
+                self.min_triangle_area * float(scale) ** 2)
             # Outside the body AABB is certainly outside a closed body's volume.
             in_box = ((points >= vertices.min(0).values) & (points <= vertices.max(0).values)).all(-1)
             winding = torch.zeros(len(points), dtype=torch.float64, device=points.device)
