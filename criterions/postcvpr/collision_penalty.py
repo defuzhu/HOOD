@@ -19,6 +19,10 @@ class Config:
     point_chunk: int = 256
     face_chunk: int = 2048
     min_triangle_area: float = 1e-12
+    contact_potential: str = 'cubic'
+    reference_vertex_area_m2: float = 0.00015214644340765933
+    barrier_stiffness: float = 94.82279102794561
+    barrier_transition_ratio: float = 0.1
 
 
 def create(mcfg):
@@ -26,12 +30,18 @@ def create(mcfg):
                      start_rampup_iteration=mcfg.start_rampup_iteration, n_rampup_iterations=mcfg.n_rampup_iterations,
                      eps=mcfg.eps, contact_geometry=mcfg.contact_geometry,
                      point_chunk=mcfg.point_chunk, face_chunk=mcfg.face_chunk,
-                     min_triangle_area=mcfg.min_triangle_area)
+                     min_triangle_area=mcfg.min_triangle_area,
+                     contact_potential=mcfg.contact_potential,
+                     reference_vertex_area_m2=mcfg.reference_vertex_area_m2,
+                     barrier_stiffness=mcfg.barrier_stiffness,
+                     barrier_transition_ratio=mcfg.barrier_transition_ratio)
 
 
 class Criterion(nn.Module):
     def __init__(self, weight_start, weight_max, start_rampup_iteration, n_rampup_iterations, eps=1e-3,
-                 contact_geometry='legacy_plane', point_chunk=256, face_chunk=2048, min_triangle_area=1e-12):
+                 contact_geometry='legacy_plane', point_chunk=256, face_chunk=2048, min_triangle_area=1e-12,
+                 contact_potential='cubic', reference_vertex_area_m2=0.00015214644340765933,
+                 barrier_stiffness=94.82279102794561, barrier_transition_ratio=0.1):
         super().__init__()
         self.weight_start = weight_start
         self.weight_max = weight_max
@@ -40,6 +50,21 @@ class Criterion(nn.Module):
         self.eps = eps
         self.f_normals_f = FaceNormals()
         self.name = 'collision_penalty'
+        self.contact_potential = contact_potential
+        self.reference_vertex_area_m2 = reference_vertex_area_m2
+        self.barrier_stiffness = barrier_stiffness
+        self.barrier_transition_ratio = barrier_transition_ratio
+        if contact_potential not in ('cubic', 'area_cubic', 'area_relaxed_barrier'):
+            raise ValueError('Unknown contact_potential')
+        if contact_potential != 'cubic':
+            import math
+            if contact_geometry != 'signed_mesh':
+                raise ValueError('Area contact potentials require signed_mesh geometry')
+            if not all(math.isfinite(x) and x > 0 for x in
+                       (eps, weight_start, reference_vertex_area_m2, barrier_stiffness)):
+                raise ValueError('Contact scales must be finite and positive')
+            if not 0 < barrier_transition_ratio < 1:
+                raise ValueError('barrier_transition_ratio must be between zero and one')
         if contact_geometry not in ['legacy_plane', 'signed_mesh']:
             raise ValueError('contact_geometry must be legacy_plane or signed_mesh')
         self.contact_geometry = contact_geometry
@@ -68,6 +93,15 @@ class Criterion(nn.Module):
             # Re-select the globally nearest triangle at the predicted/target
             # state; unlike legacy_plane this does not lag the correspondence.
             distance = self.mesh_distance(next_pos, obstacle_next_pos, obstacle_faces)['signed_distance']
+            if self.contact_potential != 'cubic':
+                from utils.contact_potential import vertex_rest_areas, area_relaxed_barrier
+                area = vertex_rest_areas(example['cloth'].rest_pos, example['cloth'].faces_batch.T)
+                if self.contact_potential == 'area_cubic':
+                    return (area / self.reference_vertex_area_m2 * (self.eps - distance).clamp_min(0).pow(3)).sum()
+                # forward multiplies by weight(iter). Normalize by the initial
+                # weight so kappa(t) = kappa_start * weight(iter)/weight_start.
+                return area_relaxed_barrier(distance, area, self.eps, self.barrier_stiffness,
+                                            self.barrier_transition_ratio) / self.weight_start
             return (self.eps - distance).clamp_min(0).pow(3).sum()
 
         # Find correspondences in current step

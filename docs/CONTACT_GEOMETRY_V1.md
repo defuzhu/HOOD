@@ -7,7 +7,7 @@ criterion are unchanged.
 
 ## Distance and penalty
 
-For every free garment vertex `x`, query the globally closest point `q` on all
+For every garment vertex `x`, query the globally closest point `q` on all
 triangles of the next-frame body mesh. The query includes triangle interiors,
 edges and vertices. The sign is negative inside the closed body and positive
 outside, classified with the generalized winding number. Thus
