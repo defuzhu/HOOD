@@ -50,6 +50,8 @@ class Criterion(nn.Module):
         self.eps = eps
         self.f_normals_f = FaceNormals()
         self.name = 'collision_penalty'
+        self.record_diagnostics = False
+        self.last_diagnostics = {}
         self.contact_potential = contact_potential
         self.reference_vertex_area_m2 = reference_vertex_area_m2
         self.barrier_stiffness = barrier_stiffness
@@ -58,8 +60,6 @@ class Criterion(nn.Module):
             raise ValueError('Unknown contact_potential')
         if contact_potential != 'cubic':
             import math
-            if contact_geometry != 'signed_mesh':
-                raise ValueError('Area contact potentials require signed_mesh geometry')
             if not all(math.isfinite(x) and x > 0 for x in
                        (eps, weight_start, reference_vertex_area_m2, barrier_stiffness)):
                 raise ValueError('Contact scales must be finite and positive')
@@ -81,6 +81,17 @@ class Criterion(nn.Module):
         weight = self.weight_start + (self.weight_max - self.weight_start) * progress
         return weight
 
+    def record_distance(self, distance):
+        if self.record_diagnostics:
+            with torch.no_grad():
+                self._distance_diagnostics = {
+                    'contact_training_active_fraction': (distance < self.eps).float().mean(),
+                    'contact_training_inside_fraction': (distance < 0).float().mean(),
+                    'contact_training_distance_min_m': distance.min(),
+                    'contact_extended_fraction': (distance < self.eps * self.barrier_transition_ratio).float().mean()
+                        if self.contact_potential == 'area_relaxed_barrier' else distance.new_tensor(0.),
+                }
+
     def calc_loss(self, example):
         obstacle_next_pos = example['obstacle'].target_pos
         obstacle_curr_pos = example['obstacle'].pos
@@ -93,15 +104,9 @@ class Criterion(nn.Module):
             # Re-select the globally nearest triangle at the predicted/target
             # state; unlike legacy_plane this does not lag the correspondence.
             distance = self.mesh_distance(next_pos, obstacle_next_pos, obstacle_faces)['signed_distance']
+            self.record_distance(distance.detach())
             if self.contact_potential != 'cubic':
-                from utils.contact_potential import vertex_rest_areas, area_relaxed_barrier
-                area = vertex_rest_areas(example['cloth'].rest_pos, example['cloth'].faces_batch.T)
-                if self.contact_potential == 'area_cubic':
-                    return (area / self.reference_vertex_area_m2 * (self.eps - distance).clamp_min(0).pow(3)).sum()
-                # forward multiplies by weight(iter). Normalize by the initial
-                # weight so kappa(t) = kappa_start * weight(iter)/weight_start.
-                return area_relaxed_barrier(distance, area, self.eps, self.barrier_stiffness,
-                                            self.barrier_transition_ratio) / self.weight_start
+                return self.calc_area_potential(distance, example)
             return (self.eps - distance).clamp_min(0).pow(3).sum()
 
         # Find correspondences in current step
@@ -122,6 +127,9 @@ class Criterion(nn.Module):
         device = next_pos.device
 
         distance = ((next_pos - nn_points) * nn_normals).sum(dim=-1)
+        self.record_distance(distance.detach())
+        if self.contact_potential != 'cubic':
+            return self.calc_area_potential(distance, example)
         interpenetration = torch.maximum(self.eps - distance, torch.FloatTensor([0]).to(device))
 
         interpenetration = interpenetration.pow(3)
@@ -129,16 +137,37 @@ class Criterion(nn.Module):
 
         return loss
 
+    def calc_area_potential(self, distance, example):
+        from utils.contact_potential import vertex_rest_areas, area_relaxed_barrier
+        area = vertex_rest_areas(example['cloth'].rest_pos, example['cloth'].faces_batch.T)
+        if self.contact_potential == 'area_cubic':
+            return (area / self.reference_vertex_area_m2 * (self.eps - distance).clamp_min(0).pow(3)).sum()
+        return area_relaxed_barrier(distance, area, self.eps, self.barrier_stiffness,
+                                    self.barrier_transition_ratio) / self.weight_start
+
     def forward(self, sample):
         B = sample.num_graphs
         iter_num = sample['cloth'].iter[0].item()
         weight = self.get_weight(iter_num)
 
         loss_list = []
+        diagnostics = []
         for i in range(B):
             loss_list.append(
                 self.calc_loss(sample.get_example(i)))
+            if self.record_diagnostics:
+                diagnostics.append(self._distance_diagnostics)
 
-        loss = sum(loss_list) / B * weight
+        raw = sum(loss_list) / B
+        loss = raw * weight
+        # Monitoring lives outside the returned loss dict and never enters backward.
+        self.last_diagnostics = {'collision_raw_loss': raw.detach(), 'collision_weight': weight}
+        if diagnostics:
+            self.last_diagnostics.update({key: torch.stack([d[key] for d in diagnostics]).mean()
+                                          for key in diagnostics[0]})
+            self.last_diagnostics['contact_training_distance_min_m'] = torch.stack(
+                [d['contact_training_distance_min_m'] for d in diagnostics]).min()
+        if self.contact_potential == 'area_relaxed_barrier':
+            self.last_diagnostics['barrier_stiffness_current'] = self.barrier_stiffness * weight / self.weight_start
 
         return dict(loss=loss)

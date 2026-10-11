@@ -6,21 +6,15 @@ import numpy as np
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
-from matplotlib.animation import FuncAnimation, PillowWriter
+from matplotlib.animation import FuncAnimation, PillowWriter, FFMpegWriter
 from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 
 
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument('rollout', type=Path)
-    parser.add_argument('--stride', type=int, default=4)
-    parser.add_argument('--max-frames', type=int, default=30)
-    parser.add_argument('--output', type=Path)
-    args = parser.parse_args()
-    if args.stride <= 0 or args.max_frames <= 0:
-        parser.error('stride and max-frames must be positive')
-    data = np.load(args.rollout)
-    indices = np.arange(0, len(data['pred']), args.stride)[:args.max_frames]
+def render_rollout(rollout, output, stride=4, max_frames=30):
+    if stride <= 0 or max_frames <= 0:
+        raise ValueError('stride and max-frames must be positive')
+    data = np.load(rollout)
+    indices = np.arange(0, len(data['pred']), stride)[:max_frames]
     # Plot y-up SMPL coordinates as (x,z,y), with identical camera/bounds across frames.
     cloth, body = data['pred'][indices][..., [0, 2, 1]], data['obstacle'][indices][..., [0, 2, 1]]
     fig = plt.figure(figsize=(6, 6))
@@ -42,10 +36,34 @@ def main():
         ax.set_title(f'Fixed rollout: frame {indices[frame]} (initialization included)')
         return body_mesh, cloth_mesh
     animation = FuncAnimation(fig, update, frames=len(indices), interval=100)
-    output = args.output or args.rollout.with_suffix('.gif')
-    animation.save(output, writer=PillowWriter(fps=10))
+    output = Path(output)
+    if output.exists():
+        raise FileExistsError(output)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    if output.suffix == '.mp4':
+        import shutil
+        encoder = shutil.which('ffmpeg')
+        if encoder is None:
+            import imageio_ffmpeg
+            encoder = imageio_ffmpeg.get_ffmpeg_exe()
+        plt.rcParams['animation.ffmpeg_path'] = encoder
+        writer = FFMpegWriter(fps=30 / stride, codec='libx264', extra_args=['-pix_fmt', 'yuv420p'])
+    else:
+        writer = PillowWriter(fps=10)
+    animation.save(output, writer=writer)
     plt.close(fig)
     print(output)
+    return output
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('rollout', type=Path)
+    parser.add_argument('--stride', type=int, default=4)
+    parser.add_argument('--max-frames', type=int, default=30)
+    parser.add_argument('--output', type=Path)
+    args = parser.parse_args()
+    render_rollout(args.rollout, args.output or args.rollout.with_suffix('.gif'), args.stride, args.max_frames)
 
 
 if __name__ == '__main__':

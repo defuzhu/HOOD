@@ -31,6 +31,12 @@ class TrainingTensorBoard:
                 self.scalar('train/' + key, value, row['global_step'])
         for key in ('roll_steps', 'optimized'):
             self.scalar('train_state/' + key, row[key], row['global_step'])
+        for key in ('optimizer_step_count', 'optimizer_updates_in_batch', 'step_time_ms', 'learning_rate'):
+            if key in row:
+                self.scalar('train_state/' + key, row[key], row['global_step'])
+        for key, value in row.items():
+            if key.startswith(('collision_raw_loss_', 'contact_', 'barrier_')):
+                self.scalar('contact/' + key, value, row['global_step'])
 
     def optimizer(self, rows):
         # One point per outer training step; rollouts have multiple Adam updates.

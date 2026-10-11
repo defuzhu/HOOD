@@ -113,6 +113,8 @@ class Experiment:
         (self.root / 'environment.txt').write_text('\n'.join(packages) + '\n')
         self.train = CSVLog(self.root / 'logs' / 'train.csv')
         self.substeps = CSVLog(self.root / 'logs' / 'train_substeps.csv')
+        (self.root / 'logs' / 'train_rollout_steps.csv').symlink_to('train_substeps.csv')
+        (self.root / 'git_commit.txt').write_text(self.metadata['git_commit'] + '\n')
         from utils.tensorboard_logging import TrainingTensorBoard
         self.tensorboard = TrainingTensorBoard(self.root / 'tensorboard',
                                               enabled=cfg.recording.get('tensorboard', True))

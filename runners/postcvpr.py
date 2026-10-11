@@ -84,7 +84,7 @@ class Runner(nn.Module):
         self.collision_solver = CollisionPreprocessor(mcfg)
         self.random_material = RandomMaterial(mcfg.material)
 
-    def valid_rollout(self, sequence, n_steps=-1, bare=False, record_time=False):
+    def valid_rollout(self, sequence, n_steps=-1, bare=False, record_time=False, frame_callback=None):
         """
         Generates a trajectory for the full sequence, use this function for inference
 
@@ -112,7 +112,8 @@ class Runner(nn.Module):
             st_time = time.time()
 
         trajectory, obstacle_trajectory, metrics_dict = self._rollout(sequence, n_samples,
-                                                                      progressbar=True, bare=bare)
+                                                                      progressbar=True, bare=bare,
+                                                                      frame_callback=frame_callback)
 
         if record_time:
             total_time = time.time() - st_time
@@ -128,7 +129,7 @@ class Runner(nn.Module):
             trajectories_dicts[s] = np.stack(trajectories_dicts[s], axis=0)
         return trajectories_dicts
 
-    def _rollout(self, sequence, n_steps, progressbar=False, bare=False):
+    def _rollout(self, sequence, n_steps, progressbar=False, bare=False, frame_callback=None):
         trajectory = []
         obstacle_trajectory = []
 
@@ -140,13 +141,27 @@ class Runner(nn.Module):
 
         prev_out_dict = None
         for i in pbar:
+            if frame_callback is not None and torch.device(self.mcfg.device).type == 'cuda':
+                torch.cuda.synchronize(self.mcfg.device)
+            frame_start = time.perf_counter()
             state = self.collect_sample_wholeseq(sequence, i, prev_out_dict)
 
             if i == 0:
                 state = self.collision_solver.solve(state)
 
             with torch.no_grad():
+                if frame_callback is not None and torch.device(self.mcfg.device).type == 'cuda':
+                    torch.cuda.synchronize(self.mcfg.device)
+                model_start = time.perf_counter()
                 state = self.model(state, is_training=False)
+                if frame_callback is not None and torch.device(self.mcfg.device).type == 'cuda':
+                    torch.cuda.synchronize(self.mcfg.device)
+                model_end = time.perf_counter()
+            if frame_callback is not None:
+                extra = frame_callback(i, state, {'frame_inference_time_ms': (model_end - frame_start) * 1000,
+                                                  'model_forward_time_ms': (model_end - model_start) * 1000})
+                for key, value in extra.items():
+                    metrics_dict[key].append(float(value))
 
             trajectory.append(state['cloth'].pred_pos.detach().cpu().numpy())
             obstacle_trajectory.append(state['obstacle'].target_pos.detach().cpu().numpy())
@@ -275,6 +290,12 @@ class Runner(nn.Module):
             loss.backward()
             if self.mcfg.grad_clip is not None:
                 grad_norm = torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.mcfg.grad_clip)
+            else:
+                with torch.no_grad():
+                    norms = [p.grad.norm(2) for p in self.model.parameters() if p.grad is not None]
+                    grad_norm = torch.stack(norms).norm(2) if norms else loss.new_tensor(0.)
+            if not torch.isfinite(grad_norm):
+                raise FloatingPointError('Non-finite gradient before optimizer update')
 
             optimizer.step()
             if scheduler is not None:
@@ -291,6 +312,9 @@ class Runner(nn.Module):
         sample = self.add_cloth_obj(sample)
 
         prev_out_sample = None
+        for criterion in self.criterion_dict.values():
+            if hasattr(criterion, 'record_diagnostics'):
+                criterion.record_diagnostics = step_callback is not None
         for i in range(roll_steps):
             sample_step = self.collect_sample(sample, i, prev_out_sample, random_ts=random_ts)
 
@@ -363,7 +387,8 @@ def run_epoch(training_module: Runner, aux_modules: dict, dataloader: DataLoader
         roll_steps = 1 + (global_step // training_module.mcfg.increase_roll_every)
         roll_steps = min(roll_steps, training_module.mcfg.roll_max)
 
-        # ld_to_write is a dictionary of loss values averaged across a training sample
+        # Legacy return is the LAST rollout substep. Recorded training uses the
+        # callback for individual substeps and computes its own mean/last logs.
         # you can feed it to tensorboard or wandb writer
         optimizer_to_pass = optimizer if global_step >= training_module.mcfg.warmup_steps else None
         scheduler_to_pass = scheduler if global_step >= training_module.mcfg.warmup_steps else None

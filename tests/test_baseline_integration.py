@@ -52,7 +52,16 @@ class PhysicsPreservationTest(unittest.TestCase):
             before = {k: v.clone() for k, v in self.runner.state_dict().items()}
             first = validator.evaluate(self.runner, 0)
             second = validator.evaluate(self.runner, 1)
-            self.assertEqual(first, second)
+            # Timing/allocator peaks vary; geometry/physics remain reproducible.
+            import numpy as np
+            for a, b in zip(first, second):
+                for key in a:
+                    if any(word in key for word in ('time_', 'total_s', 'mib')):
+                        continue
+                    if isinstance(a[key], (int, float)):
+                        np.testing.assert_allclose(a[key], b[key], rtol=1e-5, atol=1e-7)
+                    else:
+                        self.assertEqual(a[key], b[key])
             for key, value in before.items():
                 self.assertTrue(torch.equal(value, self.runner.state_dict()[key]), key)
             self.assertEqual(self.runner.cloth_obj.cache, {})

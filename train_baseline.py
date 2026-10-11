@@ -1,20 +1,23 @@
-"""Recorded postcvpr training, leaving train.py and all physics formulas intact."""
+"""Recorded HOOD training, detached logs, batch-boundary resume and common validation."""
 import contextlib
 import csv
 import os
+import signal
 import sys
 import time
 from pathlib import Path
 
-import numpy as np
 import torch
 from omegaconf import OmegaConf
 
 from utils.arguments import create_modules, load_params
-from utils.common import add_field_to_pyg_batch, move2device, save_checkpoint
+from utils.common import add_field_to_pyg_batch, move2device
 from utils.defaults import DEFAULTS
-from utils.experiment import Experiment, file_record, seed_all, write_json
+from utils.experiment import CSVLog, Experiment, file_record, seed_all, write_json
 from utils.fixed_validation import FixedValidation
+from utils.resume import (ResumableSampler, data_fingerprint, loader_iterator,
+                          restore_rng, restore_training, save_recorded_checkpoint)
+from utils.training_observer import BatchObserver
 
 
 class Tee:
@@ -29,156 +32,205 @@ class Tee:
         self.logfile.flush()
 
 
-def checkpoint(runner, aux, cfg, experiment, step, epoch):
-    path = experiment.root / 'checkpoints' / f'step_{step:010d}.pth'
-    save_checkpoint(runner, aux, cfg, str(path))
-    state = torch.load(path, map_location=cfg.device)
-    state.update(global_step=step, epoch=epoch, seed=int(cfg.seed),
-                 git_commit=experiment.metadata['git_commit'])
-    # Epoch sampler/worker state is not saved: this is NOT exact mid-epoch resumption.
-    torch.save(state, path)
-    return path
+def resume_config(config):
+    result = OmegaConf.to_container(config, resolve=True)
+    for key in ('run_dir', 'resume', 'resume_allow_code_change', 'checkpoint', 'init_checkpoint', 'protocol'):
+        result.pop(key, None)
+    result['experiment'].pop('max_iter', None)
+    result['experiment'].pop('n_epochs', None)
+    result['experiment'].pop('name', None)
+    result.pop('device', None)
+    return result
 
 
-def main():
+def main(overrides=None):
     os.environ['OMP_NUM_THREADS'] = os.environ['MKL_NUM_THREADS'] = '1'
     torch.set_num_threads(1)
-    cli = OmegaConf.from_cli()
-    config_name = cli.get('config', 'baseline/postcvpr_seed57')
-    modules, cfg = load_params(config_name, overrides=cli)
+    cli = OmegaConf.from_cli() if overrides is None else overrides
+    resumed = torch.load(cli.resume, map_location='cpu') if cli.get('resume') else None
+    config_name = cli.get('config', resumed['config']['config'] if resumed else 'baseline/postcvpr_seed57')
+    options = OmegaConf.merge(OmegaConf.create(resumed['config']), cli) if resumed else cli
+    if resumed:
+        options.pop('run_dir', None)
+    modules, cfg = load_params(config_name, overrides=options)
     if list(cfg.runner) != ['postcvpr']:
-        raise ValueError('Recorded baseline currently supports the postcvpr runner only')
-    if cfg.mode not in ['train', 'validate']:
+        raise ValueError('Recorded training supports the postcvpr runner')
+    if cfg.mode not in ('train', 'validate'):
         raise ValueError('mode must be train or validate')
-    if cfg.mode == 'train' and (cfg.step_start != 0 or cfg.experiment.checkpoint_path):
-        raise ValueError('Fresh training only. Use mode=validate for existing checkpoints; '
-                         'exact resume is not implemented.')
+    if cfg.dataloader.batch_size != 1 or cfg.dataloader.num_workers != 0:
+        raise ValueError('Recorded reproducible sampling requires batch_size=1, num_workers=0')
+    if cfg.step_start != 0 or cfg.experiment.checkpoint_path:
+        raise ValueError('Use resume= for stateful continuation, init_checkpoint= for a labelled fine-tune')
     if cfg.mode == 'validate' and not cfg.get('checkpoint'):
-        raise ValueError('mode=validate requires checkpoint=/absolute/path/to/model.pth')
-    if cfg.dataloader.batch_size != 1:
-        raise ValueError('HOOD supports batch_size=1')
-    if cfg.validation.enabled and (cfg.validation.every <= 0 or cfg.validation.n_steps <= 0):
-        raise ValueError('Validation intervals and n_steps must be positive')
+        raise ValueError('mode=validate requires checkpoint=/absolute/path/model.pth')
+    if resumed:
+        if cfg.mode != 'train' or cfg.get('init_checkpoint'):
+            raise ValueError('resume is only for continuation of training')
+        if resume_config(cfg) != resume_config(OmegaConf.create(resumed['config'])):
+            raise ValueError('Resume changes training settings. Only name/device/budget may change; '
+                             'use a separate fine-tune for different objectives/settings.')
+        if cfg.experiment.max_iter is not None and cfg.experiment.max_iter <= resumed['global_step']:
+            raise ValueError('Training budget is already completed; extend max_iter to continue')
+    if cfg.validation.enabled and (cfg.validation.every <= 0 or cfg.validation.n_steps == 0 or cfg.validation.n_steps < -1):
+        raise ValueError('Validation every must be positive; n_steps is positive or -1 for full sequences')
     if cfg.experiment.save_checkpoint_every <= 0 or cfg.experiment.n_epochs <= 0:
-        raise ValueError('Checkpoint interval and n_epochs must be positive')
+        raise ValueError('Checkpoint interval and epoch budget must be positive')
     if cfg.experiment.max_iter is not None and cfg.experiment.max_iter <= 0:
         raise ValueError('max_iter must be positive')
-    seed_all(int(cfg.seed))  # Includes model initialization, unlike the historical train.py.
-    dataloader, runner_module, runner, aux = create_modules(modules, cfg)
+    seed_all(int(cfg.seed))
+    dataloader, _, runner, aux = create_modules(modules, cfg)
     run = Experiment(cfg, DEFAULTS.project_dir, DEFAULTS.experiment_root)
     print('RUN_DIR=' + str(run.root), flush=True)
     started = time.monotonic()
-    step, epoch = 0, 0
+    progress = {'global_step': 0, 'optimizer_step_count': 0, 'epoch': 0,
+                'elapsed_s': 0., 'best_validation': None}
+    validation_log, sampler = None, None
+    stop = {'requested': False}
+    previous_handlers = {}
+    def request_stop(signum, frame):
+        stop['requested'] = True
+        print('STOP requested; finishing current batch, then saving a recoverable checkpoint', flush=True)
+    if cfg.mode == 'train':
+        for signum in (signal.SIGINT, signal.SIGTERM):
+            previous_handlers[signum] = signal.signal(signum, request_stop)
     try:
         with (run.root / 'logs' / 'console.log').open('x') as logfile, \
                 contextlib.redirect_stdout(Tee(sys.stdout, logfile)), \
                 contextlib.redirect_stderr(Tee(sys.stderr, logfile)):
-            assets = {'training_split': file_record(Path(DEFAULTS.aux_data) / cfg.dataloader.dataset.postcvpr.split_path)}
-            for key in ['smpl_model', 'garment_dict_file', 'obstacle_dict_file']:
-                assets[key] = file_record(Path(DEFAULTS.aux_data) / cfg.dataloader.dataset.postcvpr[key])
+            dataset_cfg = cfg.dataloader.dataset.postcvpr
+            assets = {'training_split': file_record(Path(DEFAULTS.aux_data) / dataset_cfg.split_path)}
+            for key in ('smpl_model', 'garment_dict_file', 'obstacle_dict_file'):
+                assets[key] = file_record(Path(DEFAULTS.aux_data) / dataset_cfg[key])
             write_json(run.root / 'assets.json', assets)
+            fingerprint = None
             if cfg.mode == 'train':
-                dataset_cfg = cfg.dataloader.dataset.postcvpr
-                split = Path(DEFAULTS.aux_data) / dataset_cfg.split_path
-                with split.open() as stream:
-                    sequence_ids = sorted({row['id'] for row in csv.DictReader(stream)})
-                data_root = Path(DEFAULTS.data_root) / dataset_cfg.data_root
-                write_json(run.root / 'training_data_manifest.json',
-                           {'sequences': [{'id': sid, **file_record(data_root / (sid + '.pkl'))}
-                                          for sid in sequence_ids]})
-            if cfg.mode == 'validate':
-                state = torch.load(cfg.checkpoint, map_location=cfg.device)
+                with (Path(DEFAULTS.aux_data) / dataset_cfg.split_path).open() as stream:
+                    ids = sorted({row['id'] for row in csv.DictReader(stream)})
+                manifest = {'sequences': [{'id': sid, **file_record(Path(DEFAULTS.data_root) / dataset_cfg.data_root / (sid + '.pkl'))}
+                                          for sid in ids]}
+                write_json(run.root / 'training_data_manifest.json', manifest)
+                fingerprint = data_fingerprint(assets, manifest)
+                if resumed:
+                    restore_training(resumed, runner, aux, dataloader.dataset, fingerprint,
+                                     run.metadata['git_commit'], cfg.get('resume_allow_code_change', False))
+                    progress = {key: resumed[key] for key in progress}
+                    run.metadata['resume'] = {'parent_run': resumed['source_run'],
+                                              'from_step': progress['global_step'],
+                                              'checkpoint': file_record(cli.resume),
+                                              'source_commit': resumed['git_commit'],
+                                              'code_changed': resumed['git_commit'] != run.metadata['git_commit']}
+                elif cfg.get('init_checkpoint'):
+                    state = torch.load(cfg.init_checkpoint, map_location='cpu')
+                    runner.load_state_dict(state.get('training_module', state))
+                    run.metadata['initialization_checkpoint'] = file_record(cfg.init_checkpoint)
+                    run.metadata['training_kind'] = 'fine_tune_with_fresh_optimizer'
+                sampler = ResumableSampler(len(dataloader.dataset), resumed['sampler'] if resumed else None)
+            else:
+                state = torch.load(cfg.checkpoint, map_location='cpu')
                 runner.load_state_dict(state.get('training_module', state))
-                # Legacy checkpoint filenames are informational, never silently claim step=0.
                 if 'global_step' in state:
-                    step = int(state['global_step'])
+                    progress['global_step'] = int(state['global_step'])
                 else:
                     stem = Path(cfg.checkpoint).stem
                     if not stem.startswith('step_') or not stem[5:].isdigit():
                         raise ValueError('Legacy checkpoint requires a step_NNN.pth filename')
-                    step = int(stem[5:])
+                    progress['global_step'] = int(stem[5:])
+                progress['optimizer_step_count'] = state.get('optimizer_step_count')
                 run.metadata['evaluated_checkpoint'] = file_record(cfg.checkpoint)
                 run.metadata['checkpoint_training_commit'] = state.get('git_commit', 'unrecorded_legacy')
+            write_json(run.root / 'metadata.json', run.metadata)
             validator = FixedValidation(modules, cfg, run.root) if cfg.validation.enabled else None
-            validation_log = None
             if validator:
-                from utils.experiment import CSVLog
                 validation_log = CSVLog(run.root / 'logs' / 'validation.csv')
-            def validate(current_step):
-                if validator:
-                    summaries = validator.evaluate(runner, current_step)
-                    for summary in summaries:
-                        validation_log.write({'global_step': current_step, **summary})
-                    run.tensorboard.validation([{'global_step': current_step, **s} for s in summaries])
-                    print(f'VALIDATION step={current_step} sequences={len(summaries)}', flush=True)
-            try:
-                if cfg.mode == 'validate':
-                    validate(step)
+            def validate(step):
+                if not validator:
+                    return False
+                summaries = validator.evaluate(runner, step)
+                rows = [{'global_step': step, 'optimizer_step_count': progress['optimizer_step_count'], **s} for s in summaries]
+                for row in rows:
+                    validation_log.write(row)
+                run.tensorboard.validation(rows)
+                metric = cfg.validation.get('best_metric', 'mesh_free_vertex_penetration_fraction_regular_mean')
+                improved = False
+                if metric in summaries[0] and step > 0:
+                    score = sum(s[metric] for s in summaries) / len(summaries)
+                    if progress['best_validation'] is None or score < progress['best_validation']['value']:
+                        progress['best_validation'] = {'metric': metric, 'value': score, 'global_step': step}
+                        improved = True
+                print(f'VALIDATION step={step} sequences={len(summaries)}', flush=True)
+                return improved
+            if cfg.mode == 'validate':
+                validate(progress['global_step'])
+            else:
+                elapsed_before = float(progress['elapsed_s'])
+                if resumed:
+                    # Restore only after all constructors; validator construction is isolated too.
+                    restore_rng(resumed['rng_state'])
                 else:
                     validate(0)
-                    if cfg.detect_anomaly:
-                        torch.autograd.set_detect_anomaly(True)
-                    runner.train()
-                    for epoch in range(cfg.experiment.n_epochs):
-                        for sample in dataloader.create_dataloader():
-                            if cfg.experiment.max_iter is not None and step >= cfg.experiment.max_iter:
-                                break
-                            step += 1
-                            sample = move2device(sample, cfg.device)
-                            sample = add_field_to_pyg_batch(sample, 'iter', [step], 'cloth', reference_key=None)
-                            rolls = min(1 + step // runner.mcfg.increase_roll_every, runner.mcfg.roll_max)
-                            optimized = step >= runner.mcfg.warmup_steps
-                            rows = []
-                            def observe(substep, state, losses, lr_used, grad_norm):
-                                scalar = {k: float(v.detach()) for k, v in losses.items()}
-                                if not all(np.isfinite(v) for v in scalar.values()):
-                                    raise FloatingPointError(f'Non-finite physical loss at step {step}')
-                                weights = [c.get_weight(step) for c in runner.criterion_dict.values() if hasattr(c, 'get_weight')]
-                                row = {
-                                    'global_step': step, 'epoch': epoch, 'rollout_substep': substep,
-                                    'roll_steps': rolls, 'optimized': int(optimized),
-                                    'sequence': sample.sequence_name[0], 'garment': sample.garment_name[0],
-                                    'timestep': float(state['cloth'].timestep[0, 0]),
-                                    'lr_used': lr_used, 'lr_next': aux['optimizer'].param_groups[0]['lr'],
-                                    'grad_norm_before_clip': None if grad_norm is None else float(grad_norm),
-                                    'collision_weight': weights[0] if weights else None,
-                                    'lame_mu': float(state['cloth'].lame_mu[0]),
-                                    'lame_lambda': float(state['cloth'].lame_lambda[0]),
-                                    'bending_coeff': float(state['cloth'].bending_coeff[0]),
-                                    **scalar, 'total_physical_loss': sum(scalar.values()),
-                                }
-                                rows.append(row)
-                                run.substeps.write(row)
-                            runner(sample, roll_steps=rolls,
-                                   optimizer=aux['optimizer'] if optimized else None,
-                                   scheduler=aux['scheduler'] if optimized else None, step_callback=observe)
-                            physical_keys = [k for k in rows[0] if k.endswith('_loss')]
-                            training_row = {'global_step': step, 'epoch': epoch, 'roll_steps': rolls,
-                                             'optimized': int(optimized), 'elapsed_s': time.monotonic() - started,
-                                             **{k + '_mean': float(np.mean([r[k] for r in rows])) for k in physical_keys},
-                                             **{k + '_last': rows[-1][k] for k in physical_keys}}
-                            run.train.write(training_row)
-                            run.tensorboard.training(training_row)
-                            run.tensorboard.optimizer(rows)
-                            if step == 1 or step % 100 == 0:
-                                print(f'TRAIN step={step} rolls={rolls} total={rows[-1]["total_physical_loss"]:.6g}', flush=True)
-                            if step % cfg.experiment.save_checkpoint_every == 0:
-                                checkpoint(runner, aux, cfg, run, step, epoch)
-                            if validator and step % cfg.validation.every == 0:
-                                validate(step)
-                        if cfg.experiment.max_iter is not None and step >= cfg.experiment.max_iter:
+                runner.train()
+                if cfg.detect_anomaly:
+                    torch.autograd.set_detect_anomaly(True)
+                restoring_iterator = resumed is not None
+                while sampler.epoch < cfg.experiment.n_epochs and not stop['requested']:
+                    if sampler.order is not None and sampler.cursor == sampler.length:
+                        sampler.next_epoch()
+                        restoring_iterator = False
+                        if sampler.epoch >= cfg.experiment.n_epochs:
                             break
-                    if step % cfg.experiment.save_checkpoint_every != 0:
-                        checkpoint(runner, aux, cfg, run, step, epoch)
-                    if validator and step % cfg.validation.every != 0:
-                        validate(step)
-            finally:
-                if validation_log:
-                    validation_log.close()
-        run.finish('completed', global_step=step, epoch=epoch, elapsed_s=time.monotonic() - started)
+                    iterator = loader_iterator(dataloader.dataset, sampler, restoring_iterator)
+                    restoring_iterator = False
+                    while sampler.cursor < sampler.length and not stop['requested']:
+                        if cfg.experiment.max_iter is not None and progress['global_step'] >= cfg.experiment.max_iter:
+                            break
+                        step = progress['global_step'] + 1
+                        observer = BatchObserver(runner, aux, run, step, sampler.epoch, progress['optimizer_step_count'])
+                        sample = next(iterator)
+                        observer.sample_index = sampler.order[sampler.cursor]
+                        sample = move2device(sample, cfg.device)
+                        sample = add_field_to_pyg_batch(sample, 'iter', [step], 'cloth', reference_key=None)
+                        rolls = min(1 + step // runner.mcfg.increase_roll_every, runner.mcfg.roll_max)
+                        optimized = step >= runner.mcfg.warmup_steps
+                        runner(sample, roll_steps=rolls, optimizer=aux['optimizer'] if optimized else None,
+                               scheduler=aux['scheduler'] if optimized else None, step_callback=observer.record)
+                        elapsed = elapsed_before + time.monotonic() - started
+                        summary = observer.finish(rolls, elapsed)
+                        sampler.commit()
+                        progress.update(global_step=step, epoch=sampler.epoch,
+                                        optimizer_step_count=observer.updates, elapsed_s=elapsed)
+                        last = ((cfg.experiment.max_iter is not None and step >= cfg.experiment.max_iter)
+                                or (sampler.cursor == sampler.length and sampler.epoch + 1 >= cfg.experiment.n_epochs))
+                        improved = False
+                        if validator and not stop['requested'] and (step % cfg.validation.every == 0 or last):
+                            improved = validate(step)
+                        if step == 1 or step % 100 == 0:
+                            print(f'TRAIN step={step} updates={observer.updates} rolls={rolls} total={summary["total_physical_loss_last"]:.6g}', flush=True)
+                        if step % cfg.experiment.save_checkpoint_every == 0 or last or stop['requested'] or improved:
+                            progress['elapsed_s'] = elapsed_before + time.monotonic() - started
+                            path = save_recorded_checkpoint(runner, aux, cfg, run, sampler, dataloader.dataset, progress, fingerprint)
+                            run.metadata['latest_checkpoint'] = str(path)
+                            if improved:
+                                write_json(run.root / 'checkpoints' / 'best_checkpoint.json',
+                                           {'path': str(path), **progress['best_validation']})
+                        if last:
+                            break
+                    if cfg.experiment.max_iter is not None and progress['global_step'] >= cfg.experiment.max_iter:
+                        break
+                if progress['global_step'] > 0:
+                    path = save_recorded_checkpoint(runner, aux, cfg, run, sampler, dataloader.dataset, progress, fingerprint)
+                    run.metadata['latest_checkpoint'] = str(path)
+        run.finish('interrupted' if stop['requested'] else 'completed', **progress,
+                   invocation_elapsed_s=time.monotonic() - started)
     except BaseException as error:
-        run.finish('failed', global_step=step, error=f'{type(error).__name__}: {error}')
+        run.finish('failed', **progress, error=f'{type(error).__name__}: {error}',
+                   recovery_note='Resume the last completed checkpoint; no partially optimized batch is saved.')
         raise
+    finally:
+        if validation_log:
+            validation_log.close()
+        for signum, handler in previous_handlers.items():
+            signal.signal(signum, handler)
+    return run.root
 
 
 if __name__ == '__main__':

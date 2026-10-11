@@ -1,0 +1,89 @@
+experiment:
+  name: smoke_system_baseline
+  save_checkpoint_every: 2
+  n_epochs: 20000000
+  max_iter: 4
+runner:
+  postcvpr:
+    warmup_steps: 2
+    optimizer:
+      lr: 5.0e-05
+      decay_steps: 2
+      decay_rate: 0.5
+    material:
+      lame_mu_min: 15909
+      lame_mu_max: 63636
+      lame_lambda_min: 3535.414406069427
+      lame_lambda_max: 93333.73508005822
+      bending_coeff_min: 6.370782056371576e-08
+      bending_coeff_max: 0.0013139737991266374
+      density_min: 0.0434
+      density_max: 0.7
+    increase_roll_every: 2
+    roll_max: 3
+dataloader:
+  num_workers: 0
+  batch_size: 1
+  pyg_data: true
+  dataset:
+    postcvpr:
+      data_root: vto_dataset/smpl_parameters
+      smpl_model: smpl/SMPL_FEMALE.pkl
+      garment_dict_file: garments_dict.pkl
+      obstacle_dict_file: smpl_aux.pkl
+      split_path: datasplits/train.csv
+      lookup_steps: 5
+      pinned_verts: true
+      random_betas: true
+      betas_scale: 3.0
+      n_coarse_levels: 3
+criterions:
+  postcvpr.mataug.stretching_energy: null
+  postcvpr.inertia: null
+  postcvpr.gravitational_energy:
+    z_axis: 1
+  postcvpr.collision_penalty:
+    weight_start: 5000.0
+    weight_max: 500000.0
+    eps: 0.002
+    start_rampup_iteration: 50000
+    n_rampup_iterations: 100000
+  postcvpr.mataug.bending_energy: null
+  postcvpr.friction_energy:
+    mu: 0.5
+    friction_radius: 0.003
+model:
+  postcvpr:
+    core_model: postcvpr
+    architecture: f,c0|f,c0|f,c0|d:c0,c1|c0,c1|c0,c1|d:c1|c1|c1|u:c0,c1|c0,c1|c0,c1|u:f,c0|f,c0|f,c0
+    collision_radius: 0.03
+    k_world_edges: 1
+    n_coarse_levels: 3
+device: cuda:0
+seed: 57
+mode: train
+recording:
+  require_clean: true
+  tensorboard: true
+validation:
+  enabled: true
+  every: 2
+  seed: 12345
+  n_steps: 3
+  save_rollouts: true
+  split_kind: held_out_motion
+  sequences:
+  - id: tshirt_shape00_01_01
+    garment: tshirt
+  - id: tshirt_shape00_07_02
+    garment: tshirt
+  - id: tshirt_shape00_104_54
+    garment: tshirt
+  material:
+    density: 0.20022
+    lame_mu: 23600.0
+    lame_lambda: 44400.0
+    bending_coeff: 3.9625778333333325e-05
+  contact_geometry_metrics: true
+  save_videos: false
+  best_metric: mesh_free_vertex_penetration_fraction_regular_mean
