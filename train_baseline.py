@@ -52,6 +52,9 @@ def main(overrides=None):
     options = OmegaConf.merge(OmegaConf.create(resumed['config']), cli) if resumed else cli
     if resumed:
         options.pop('run_dir', None)
+        # Initialization is already represented by the saved model/Adam state.
+        # Do not warm-start a second time when continuing a labelled fine-tune.
+        options.pop('init_checkpoint', None)
     modules, cfg = load_params(config_name, overrides=options)
     if list(cfg.runner) != ['postcvpr']:
         raise ValueError('Recorded training supports the postcvpr runner')

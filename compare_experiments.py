@@ -82,6 +82,12 @@ def controls(run):
     info = metadata(source)
     if info.get('evaluated_checkpoint'):
         source = Path(info['evaluated_checkpoint']['path']).parent.parent
+    visited = set()
+    while metadata(source).get('resume'):
+        if source in visited:
+            raise ValueError('Cycle in resume provenance')
+        visited.add(source)
+        source = Path(metadata(source)['resume']['parent_run'])
     if (source / 'assets.json').is_file():
         assets = json.loads((source / 'assets.json').read_text())
         result['asset_hashes'] = {key: value['sha256'] for key, value in assets.items()}
