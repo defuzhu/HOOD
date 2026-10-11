@@ -68,6 +68,7 @@ seed: 57
 mode: train
 recording:
   require_clean: true
+  tensorboard: true
 validation:
   enabled: true
   every: 5000

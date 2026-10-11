@@ -113,9 +113,13 @@ class Experiment:
         (self.root / 'environment.txt').write_text('\n'.join(packages) + '\n')
         self.train = CSVLog(self.root / 'logs' / 'train.csv')
         self.substeps = CSVLog(self.root / 'logs' / 'train_substeps.csv')
+        from utils.tensorboard_logging import TrainingTensorBoard
+        self.tensorboard = TrainingTensorBoard(self.root / 'tensorboard',
+                                              enabled=cfg.recording.get('tensorboard', True))
 
     def finish(self, status, **details):
         self.metadata.update(status=status, **details)
         write_json(self.root / 'metadata.json', self.metadata)
         self.train.close()
         self.substeps.close()
+        self.tensorboard.close()

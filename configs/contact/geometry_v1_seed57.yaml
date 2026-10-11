@@ -72,6 +72,7 @@ seed: 57
 mode: train
 recording:
   require_clean: true
+  tensorboard: true
 validation:
   enabled: true
   contact_geometry_metrics: true

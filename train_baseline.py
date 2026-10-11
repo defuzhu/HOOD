@@ -109,6 +109,7 @@ def main():
                     summaries = validator.evaluate(runner, current_step)
                     for summary in summaries:
                         validation_log.write({'global_step': current_step, **summary})
+                    run.tensorboard.validation([{'global_step': current_step, **s} for s in summaries])
                     print(f'VALIDATION step={current_step} sequences={len(summaries)}', flush=True)
             try:
                 if cfg.mode == 'validate':
@@ -152,10 +153,13 @@ def main():
                                    optimizer=aux['optimizer'] if optimized else None,
                                    scheduler=aux['scheduler'] if optimized else None, step_callback=observe)
                             physical_keys = [k for k in rows[0] if k.endswith('_loss')]
-                            run.train.write({'global_step': step, 'epoch': epoch, 'roll_steps': rolls,
+                            training_row = {'global_step': step, 'epoch': epoch, 'roll_steps': rolls,
                                              'optimized': int(optimized), 'elapsed_s': time.monotonic() - started,
                                              **{k + '_mean': float(np.mean([r[k] for r in rows])) for k in physical_keys},
-                                             **{k + '_last': rows[-1][k] for k in physical_keys}})
+                                             **{k + '_last': rows[-1][k] for k in physical_keys}}
+                            run.train.write(training_row)
+                            run.tensorboard.training(training_row)
+                            run.tensorboard.optimizer(rows)
                             if step == 1 or step % 100 == 0:
                                 print(f'TRAIN step={step} rolls={rolls} total={rows[-1]["total_physical_loss"]:.6g}', flush=True)
                             if step % cfg.experiment.save_checkpoint_every == 0:

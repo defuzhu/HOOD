@@ -165,3 +165,4 @@ Debug.ipynb
 # Local run records and baseline experiment artifacts
 /training_runs/
 /experiments/
+**/events.out.tfevents.*
