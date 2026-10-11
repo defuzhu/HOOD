@@ -42,7 +42,11 @@ def render_rollout(rollout, output, stride=4, max_frames=30):
     output.parent.mkdir(parents=True, exist_ok=True)
     if output.suffix == '.mp4':
         import shutil
-        encoder = shutil.which('ffmpeg')
+        try:
+            import imageio_ffmpeg
+            encoder = imageio_ffmpeg.get_ffmpeg_exe()
+        except ImportError:
+            encoder = shutil.which('ffmpeg')
         if encoder is None:
             import sys
             environment_encoder = Path(sys.prefix) / 'bin' / 'ffmpeg'
@@ -54,7 +58,9 @@ def render_rollout(rollout, output, stride=4, max_frames=30):
         plt.rcParams['animation.ffmpeg_path'] = encoder
         import subprocess
         encoders = subprocess.check_output([encoder, '-hide_banner', '-encoders'], text=True)
-        codec = 'libx264' if 'libx264' in encoders else 'libopenh264'
+        # Conda's old OpenH264 build may load an incompatible shared library.
+        # Native MPEG-4 remains a working offline-player fallback.
+        codec = 'libx264' if 'libx264' in encoders else 'mpeg4'
         writer = FFMpegWriter(fps=30 / stride, codec=codec, bitrate=2000, extra_args=['-pix_fmt', 'yuv420p'])
     else:
         writer = PillowWriter(fps=10)
