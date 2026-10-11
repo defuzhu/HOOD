@@ -44,10 +44,18 @@ def render_rollout(rollout, output, stride=4, max_frames=30):
         import shutil
         encoder = shutil.which('ffmpeg')
         if encoder is None:
+            import sys
+            environment_encoder = Path(sys.prefix) / 'bin' / 'ffmpeg'
+            if environment_encoder.is_file():
+                encoder = str(environment_encoder)
+        if encoder is None:
             import imageio_ffmpeg
             encoder = imageio_ffmpeg.get_ffmpeg_exe()
         plt.rcParams['animation.ffmpeg_path'] = encoder
-        writer = FFMpegWriter(fps=30 / stride, codec='libx264', extra_args=['-pix_fmt', 'yuv420p'])
+        import subprocess
+        encoders = subprocess.check_output([encoder, '-hide_banner', '-encoders'], text=True)
+        codec = 'libx264' if 'libx264' in encoders else 'libopenh264'
+        writer = FFMpegWriter(fps=30 / stride, codec=codec, bitrate=2000, extra_args=['-pix_fmt', 'yuv420p'])
     else:
         writer = PillowWriter(fps=10)
     animation.save(output, writer=writer)

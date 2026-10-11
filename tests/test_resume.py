@@ -1,4 +1,5 @@
 import random
+from collections import defaultdict
 import tempfile
 import unittest
 from pathlib import Path
@@ -28,7 +29,7 @@ class ToyRunner(torch.nn.Module):
         super().__init__()
         self.model = torch.nn.Sequential(torch.nn.Linear(4, 5), torch.nn.Dropout(.2), torch.nn.Linear(5, 1))
         self.register_buffer('normalizer_count', torch.zeros(()))
-        self.cloth_obj = SimpleNamespace(cache={})
+        self.cloth_obj = SimpleNamespace(cache=defaultdict(dict))
         self.mcfg = SimpleNamespace(device='cpu')
 
 
@@ -84,6 +85,8 @@ class ResumeTest(unittest.TestCase):
             expected_state = {k: v.clone() for k, v in runner.state_dict().items()}
             restored, restored_aux = initialize(); restored_dataset = RandomDataset()
             restore_training(checkpoint, restored, restored_aux, restored_dataset, 'data', 'fixture')
+            self.assertIsInstance(restored.cloth_obj.cache, defaultdict)
+            self.assertEqual(restored.cloth_obj.cache['unseen_garment'], {})
             restored_sampler = ResumableSampler(len(restored_dataset), checkpoint['sampler'])
             restore_rng(checkpoint['rng_state'])
             actual, resumed_count = batches(restored, restored_aux, restored_sampler, restored_dataset, 2, 4, updates, restoring=True)

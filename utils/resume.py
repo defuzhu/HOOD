@@ -3,6 +3,7 @@ import copy
 import hashlib
 import json
 import random
+from collections import defaultdict
 from pathlib import Path
 
 import numpy as np
@@ -84,6 +85,8 @@ def loader_iterator(dataset, sampler, restoring=False):
 def move_tree(value, device):
     if torch.is_tensor(value):
         return value.detach().to(device).clone()
+    if isinstance(value, defaultdict):
+        return defaultdict(value.default_factory, {key: move_tree(item, device) for key, item in value.items()})
     if isinstance(value, dict):
         return {key: move_tree(item, device) for key, item in value.items()}
     if isinstance(value, list):
