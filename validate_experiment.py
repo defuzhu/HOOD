@@ -22,6 +22,9 @@ if __name__ == '__main__':
                                      'experiment': {'name': 'common_evaluation', 'checkpoint_path': None},
                                      'validation': OmegaConf.load(protocol)['validation']}, cli)
     options['mode'] = 'validate'
+    # Preserve the model's training identity even when the evaluation run is renamed.
+    if not options.validation.get('rollout_experiment'):
+        options.validation.rollout_experiment = stored.get('experiment', {}).get('name') or options.experiment.name
     for key in ('run_dir', 'resume', 'init_checkpoint'):
         options.pop(key, None)
     main(options)

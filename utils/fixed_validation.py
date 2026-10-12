@@ -20,6 +20,7 @@ from utils.experiment import CSVLog, file_record, isolated_rng, write_json
 from utils.validation import Config, update_config_for_validation, update_config_single_sequence
 from utils.contact_potential import vertex_rest_areas
 from utils.training_observer import synchronize
+from utils.rollout_io import DEFAULT_ROLLOUT_TEMPLATE, rollout_filename
 
 
 def motion_id(sequence):
@@ -85,6 +86,15 @@ class FixedValidation:
         entries = list(cfg.validation.sequences)
         if not entries:
             raise ValueError('Fixed validation requires at least one sequence')
+        self.output_names = {}
+        for entry in entries:
+            key = (entry.id, entry.garment)
+            name = rollout_filename(cfg.validation.get('rollout_experiment') or cfg.experiment.name,
+                                    cfg.seed, entry.id, entry.garment,
+                                    cfg.validation.get('rollout_name_template', DEFAULT_ROLLOUT_TEMPLATE))
+            if key in self.output_names or name in self.output_names.values():
+                raise ValueError('Validation sequences or rollout filenames are duplicated')
+            self.output_names[key] = name
         dataset_cfg = cfg.dataloader.dataset.postcvpr
         data_root = Path(DEFAULTS.data_root) / dataset_cfg.data_root
         train_path = Path(DEFAULTS.aux_data) / dataset_cfg.split_path
@@ -234,15 +244,16 @@ class FixedValidation:
                             summary[key + '_regular_mean'] = float(array[1:].mean())
                     summaries.append(summary)
                     if self.cfg.validation.save_rollouts:
-                        np.savez_compressed(destination / f'{sequence_id}_{garment}_rollout.npz',
+                        rollout_path = destination / self.output_names[(sequence_id, garment)]
+                        np.savez_compressed(rollout_path,
                                             pred=rollout['pred'], obstacle=rollout['obstacle'],
                                             cloth_faces=rollout['cloth_faces'], obstacle_faces=rollout['obstacle_faces'])
                         if self.cfg.validation.get('save_videos', False):
                             from render_baseline import render_rollout
                             videos = self.root / 'videos' / f'step_{step:010d}'
                             videos.mkdir(parents=True, exist_ok=True)
-                            render_rollout(destination / f'{sequence_id}_{garment}_rollout.npz',
-                                           videos / f'{sequence_id}_{garment}.mp4',
+                            render_rollout(rollout_path,
+                                           videos / rollout_path.with_suffix('.mp4').name,
                                            stride=int(self.cfg.validation.get('video_stride', 4)),
                                            max_frames=int(self.cfg.validation.get('video_max_frames', 60)))
         write_json(destination / 'metrics.json', {'global_step': step, 'evaluation_signature': self.signature,

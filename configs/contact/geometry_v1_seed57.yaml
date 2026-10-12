@@ -82,6 +82,12 @@ validation:
     garment: tshirt
   - id: tshirt_shape00_104_54
     garment: tshirt
+  - id: tshirt_shape00_01_01
+    garment: longskirt
+  - id: tshirt_shape00_07_02
+    garment: longskirt
+  - id: tshirt_shape00_104_54
+    garment: longskirt
   material:
     density: 0.20022
     lame_mu: 23600.0
@@ -89,3 +95,4 @@ validation:
     bending_coeff: 3.9625778333333325e-05
   save_videos: false
   best_metric: mesh_free_vertex_penetration_fraction_regular_mean
+  rollout_name_template: '{experiment}_seed{seed}_{sequence}_{garment}_rollout.npz'
