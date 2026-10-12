@@ -10,9 +10,11 @@ from matplotlib.animation import FuncAnimation, PillowWriter, FFMpegWriter
 from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 
 
-def render_rollout(rollout, output, stride=4, max_frames=30):
+def render_rollout(rollout, output, stride=4, max_frames=30, fps=30):
     if stride <= 0 or max_frames <= 0:
         raise ValueError('stride and max-frames must be positive')
+    if not np.isfinite(fps) or fps <= 0:
+        raise ValueError('fps must be finite and positive')
     data = np.load(rollout)
     indices = np.arange(0, len(data['pred']), stride)[:max_frames]
     # Plot y-up SMPL coordinates as (x,z,y), with identical camera/bounds across frames.
@@ -61,9 +63,9 @@ def render_rollout(rollout, output, stride=4, max_frames=30):
         # Conda's old OpenH264 build may load an incompatible shared library.
         # Native MPEG-4 remains a working offline-player fallback.
         codec = 'libx264' if 'libx264' in encoders else 'mpeg4'
-        writer = FFMpegWriter(fps=30 / stride, codec=codec, bitrate=2000, extra_args=['-pix_fmt', 'yuv420p'])
+        writer = FFMpegWriter(fps=fps / stride, codec=codec, bitrate=2000, extra_args=['-pix_fmt', 'yuv420p'])
     else:
-        writer = PillowWriter(fps=10)
+        writer = PillowWriter(fps=fps / stride)
     animation.save(output, writer=writer)
     plt.close(fig)
     print(output)
@@ -76,8 +78,9 @@ def main():
     parser.add_argument('--stride', type=int, default=4)
     parser.add_argument('--max-frames', type=int, default=30)
     parser.add_argument('--output', type=Path)
+    parser.add_argument('--fps', type=float, default=30, help='Source rollout frames per second')
     args = parser.parse_args()
-    render_rollout(args.rollout, args.output or args.rollout.with_suffix('.gif'), args.stride, args.max_frames)
+    render_rollout(args.rollout, args.output or args.rollout.with_suffix('.gif'), args.stride, args.max_frames, args.fps)
 
 
 if __name__ == '__main__':
