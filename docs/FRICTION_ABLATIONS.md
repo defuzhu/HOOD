@@ -131,3 +131,55 @@ loss 或总 loss 下降作结论。
 先运行物理测试，再做三组短程前后向和六组验证，检查 CSV/TB/checkpoint 及断点恢复，
 最后才做正式训练。改变 YAML 摩擦配置不会立即改变现有模型的裸推理输出；必须训练
 相应模型，或另行实现物理修正层，才能改变运动。
+
+## 本次执行结果（2026-10-14）
+
+实现提交 `cbf9e13` 上完成三组真实 GPU 短程训练，各 4 batch、8 次 Adam 更新，
+均在 step 0/4 执行六组各 3 帧固定验证。对应实验目录位于 `$HOOD_DATA/experiments/`：
+
+- `smoke_friction_legacy_seed57_20261014T082319Z_d84aa3cd`
+- `smoke_friction_geometry_mg_seed57_20261014T082354Z_ae9f32f4`
+- `smoke_friction_lagged_coulomb_seed57_20261014T082438Z_af8dcb51`
+
+验证三组初始共同滑移指标相同；每组 4 行 batch 日志、8 行子步日志、12 行验证日志，
+末次六份 NPZ 均有限。原版 TensorBoard 759 个 scalar tags，B/C 各 771 个，包含
+新增摩擦诊断和共同滑移指标。B/C 实际训练中的摩擦 loss 均出现非零值。
+38 项自动测试中 34 项通过、4 项因其 opt-in/CUDA 条件跳过；新摩擦 6 项测试全部通过。
+新增比较器测试确认滑移指标只输出描述性变化，不自动声称“减少就是改善”。
+
+C 组从 step 2 恢复到 step 4 的目录：
+`smoke_friction_lagged_coulomb_resume_seed57_20261014T082707Z_50e6df0c`。
+恢复样本索引和总更新次数一致，载荷绑定、优化器、验证均正常。
+CUDA 连续运行与恢复运行并非逐位一致：模型非 Normalizer 张量最大绝对差约
+`1.24e-4`，Normalizer 累计量最大绝对差 `0.00390625`，摩擦子步 loss 最大差
+`2.03e-4`。本次未证明严格数值等价；正式实验应记录恢复历史，不能宣称位级复现。
+
+自动比较结果：
+`$HOOD_DATA/experiments/comparisons/friction_smoke_20261014T162813/{A_vs_B,B_vs_C}/`。
+包含训练物理项、状态/摩擦诊断、统一评价和逐帧穿透/接触滑移曲线。
+这里只是短程功能验证，不是性能优劣证据。
+
+C 组随机初始化短测中，单顶点载荷峰值约 8.28 N，摩擦增量势峰值约 7.16 J；
+这来自有穿透的软接触状态，尚未标定。没有偷偷限幅或改变法向势能。
+正式训练前/中应检查载荷分布、梯度裁剪、拉伸和粘滞情况；需要时将限幅作为
+单独消融，而不是把它混入上述三组定义。
+
+已核对旧完整 Modified 60000 步实验与 A 配置：模型、runner、seed、预算、原有
+criterion 参数相同；数据根目录仅相对/绝对写法不同；资产及训练动作哈希相同。
+因此可优先复用旧 Modified 为 seed57 的 A 组。仍应以新的统一六序列评价重评，
+确保与 B/C 使用相同帧数和材料；旧官方 baseline 不能替代这里的 A。
+
+日常项目中的 `HOOD_Universal_Inference.ipynb` 有用户未提交改动，本次保持原样。
+`recording.require_clean=true` 会拒绝脏工作区正式训练；不必为此删除 notebook 改动。
+可以在干净研究工作树运行上述命令，只把启动位置改为：
+
+```bash
+cd /home/zhudf/.codex/worktrees/1ce8/HOOD
+export HOOD_PROJECT="$PWD"
+```
+
+如果采用断点恢复，请始终明确预算，例如：
+
+```bash
+python train_baseline.py resume=/absolute/path/checkpoint.pth experiment.max_iter=60000
+```

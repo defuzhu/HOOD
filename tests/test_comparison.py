@@ -24,7 +24,8 @@ class ComparisonTest(unittest.TestCase):
                        'stretching_energy_loss_mean': 1 / i} for i in range(1, 5)]).to_csv(run / 'logs/train.csv', index=False)
         pd.DataFrame([{'global_step': 4, 'sequence': 'motion', 'garment': 'tshirt', 'frames': 2,
                        'mesh_vertex_penetration_fraction_mean': value,
-                       'mesh_vertex_penetration_depth_mean_m_mean': 0.}]).to_csv(run / 'logs/validation.csv', index=False)
+                       'mesh_vertex_penetration_depth_mean_m_mean': 0.,
+                       'common_contact_slip_speed_mean_m_s_regular_mean': value}]).to_csv(run / 'logs/validation.csv', index=False)
         return run
 
     def test_paired_seed_statistics_and_zero_denominator(self):
@@ -39,6 +40,9 @@ class ComparisonTest(unittest.TestCase):
             self.assertAlmostEqual(row[('absolute_change', 'std')], np.sqrt(.0002))
             metrics = pd.read_csv(out / 'metrics_comparison.csv')
             self.assertTrue(metrics[metrics.metric.str.contains('depth')].relative_change_percent.isna().all())
+            slip = metrics[metrics.metric.str.startswith('common_contact_')]
+            self.assertTrue((slip.direction == 'descriptive').all())
+            self.assertTrue(slip.relative_improvement_percent.isna().all())
             self.assertTrue((out / 'training_curves/stretching_energy_loss_mean.png').is_file())
             with self.assertRaises(FileExistsError):
                 compare(b, m, out)

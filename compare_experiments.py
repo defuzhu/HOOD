@@ -213,7 +213,9 @@ def compare(baseline, modified, output, axis='global_step', exploratory=False):
     aggregate.to_csv(output / 'paired_seed_statistics.csv')
     train_cols = set.intersection(*[set(frame.columns) for frame in base_train + mod_train])
     losses = sorted(c for c in train_cols if c.endswith(('_loss_mean', '_loss_last')) and not c.startswith('total_loss_'))
-    monitor = sorted(c for c in train_cols if c.startswith(('lr_', 'grad_norm_', 'collision_weight', 'step_time_ms', 'collision_raw_loss')))
+    monitor = sorted(c for c in train_cols if c.startswith(('lr_', 'grad_norm_', 'collision_weight',
+                     'step_time_ms', 'collision_raw_loss', 'friction_load_', 'friction_active_',
+                     'friction_inside_', 'friction_slip_', 'friction_low_speed_')))
     plot_curves(base_train, mod_train, losses, axis, output / 'training_curves', objective=True)
     plot_curves(base_train, mod_train, monitor, axis, output / 'training_state')
     # Common evaluation trends across matched checkpoints, averaged per seed over sequences.
@@ -239,7 +241,8 @@ def compare(baseline, modified, output, axis='global_step', exploratory=False):
             if not other.is_file():
                 raise ValueError('Missing matching per-frame sequence')
             x, y = pd.read_csv(path), pd.read_csv(other)
-            columns = [key for key in x if key.startswith(('mesh_vertex_penetration', 'mesh_penetrating_depth', 'mesh_penetration_area'))]
+            columns = [key for key in x if key.startswith(('mesh_vertex_penetration', 'mesh_penetrating_depth',
+                        'mesh_penetration_area', 'common_contact_'))]
             plot_curves([x], [y], columns, 'frame', output / 'per_frame' / f'seed{seed}' / path.stem)
     write = {'pairs': checks, 'evaluation_signature': next(iter(signatures)), 'axis': axis,
              'exploratory': exploratory, 'paired_seeds': len(pairs),
