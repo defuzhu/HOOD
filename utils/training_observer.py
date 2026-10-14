@@ -78,7 +78,7 @@ class BatchObserver:
             summary[key + '_mean'] = float(np.mean([row[key] for row in self.rows]))
             summary[key + '_last'] = self.rows[-1][key]
         monitor = ['collision_raw_loss', 'collision_weight', 'grad_norm_preclip', 'learning_rate']
-        monitor += [key for key in self.rows[0] if key.startswith(('contact_', 'barrier_'))]
+        monitor += [key for key in self.rows[0] if key.startswith(('contact_', 'barrier_', 'friction_')) and key not in physical]
         for key in monitor:
             values = [row.get(key) for row in self.rows if row.get(key) is not None]
             summary[key + '_mean'] = float(np.mean(values)) if values else None

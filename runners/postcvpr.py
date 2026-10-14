@@ -75,6 +75,9 @@ class Runner(nn.Module):
 
         self.model = model
         self.criterion_dict = criterion_dict
+        for criterion in criterion_dict.values():
+            if hasattr(criterion, 'bind_contact'):
+                criterion.bind_contact(criterion_dict.get('collision_penalty'))
         self.mcfg = mcfg
 
         self.cloth_obj = ClothMatAug(None, always_overwrite_mass=True)

@@ -17,7 +17,8 @@ class TensorBoardTest(unittest.TestCase):
             (root / 'metadata.json').write_text(json.dumps({'git_commit': 'fixture'}))
             training = [dict(global_step=1, roll_steps=2, optimized=1,
                              total_physical_loss_mean=3., total_physical_loss_last=4.,
-                             inertia_loss_mean=1., inertia_loss_last=2.)]
+                             inertia_loss_mean=1., inertia_loss_last=2.,
+                             friction_load_sum_n_mean=.12, friction_load_sum_n_last=.14)]
             substeps = [dict(global_step=1, lr_used=.1, lr_next=.05, grad_norm_before_clip=3., collision_weight=5000),
                         dict(global_step=1, lr_used=.05, lr_next=.025, grad_norm_before_clip=4., collision_weight=5000)]
             validation = [dict(global_step=1, sequence='a', garment='shirt', frames=10, total_physical_loss_regular_mean=2.),
@@ -38,6 +39,7 @@ class TensorBoardTest(unittest.TestCase):
                 return {tag: [(s.step, s.value) for s in events.Scalars(tag)] for tag in events.Tags()['scalars']}
             imported = scalars(root / 'imported')
             self.assertEqual(imported, scalars(root / 'live'))
+            self.assertAlmostEqual(imported['friction/friction_load_sum_n_mean'][0][1], .12)
             self.assertAlmostEqual(imported['optimizer/lr_used_mean'][0][1], .075)
             self.assertEqual(imported['validation/sequence_mean/total_physical_loss_regular_mean'], [(1, 3.)])
             with self.assertRaises(FileExistsError):

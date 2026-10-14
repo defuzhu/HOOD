@@ -11,6 +11,8 @@ from utils.common import gather
 
 @dataclass
 class Config:
+    mode: str = 'legacy'
+    velocity_epsilon: float = 0.01  # m/s; only lagged_coulomb uses smoothing
     weight: float = 1.
     g: float = 9.81
     mu: float = 1.
@@ -18,6 +20,9 @@ class Config:
 
 
 def create(mcfg):
+    if mcfg.mode != 'legacy':
+        from criterions.postcvpr.friction_contact import Criterion as ContactFriction
+        return ContactFriction(mcfg)
     return Criterion(weight=mcfg.weight, g=mcfg.g, mu=mcfg.mu,
                      friction_radius=mcfg.friction_radius)
 

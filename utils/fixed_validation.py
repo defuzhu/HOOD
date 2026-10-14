@@ -58,6 +58,19 @@ def geometry_metrics(state, contact_query=None):
                                       / cloth.timestep.square()).square().sum(-1).mean().sqrt(),
     }
     if contact_query is not None:
+        from utils.friction_contact import contact_kinematics, tangential_displacement
+        kin = contact_kinematics(cloth.pos, body.pos, body.target_pos, faces, contact_query)
+        slip = tangential_displacement(y, cloth.pos, kin)
+        # Independent fixed 2 mm support; identical for all training friction models.
+        active = (kin['distance'] < .002) & ~handles
+        count = active.sum().clamp_min(1)
+        speed = slip.norm(dim=-1) / cloth.timestep.reshape(-1)[0]
+        metrics.update({
+            'common_contact_free_fraction': active.sum() / (~handles).sum().clamp_min(1),
+            'common_contact_slip_speed_mean_m_s': (speed * active).sum() / count,
+            'common_contact_slip_speed_rms_m_s': ((speed.square() * active).sum() / count).sqrt(),
+            'common_contact_slip_speed_max_m_s': (speed * active).max(),
+        })
         signed_mesh = contact_query(y, body.target_pos, faces)['signed_distance']
         depth_mesh = (-signed_mesh).clamp_min(0)
         free = ~handles
@@ -154,7 +167,7 @@ class FixedValidation:
                                               'winding semantics.')
         write_json(self.root / 'validation_manifest.json', manifest)
         definition = {
-            'version': 'common_postcvpr_mesh_v2', 'seed': int(cfg.validation.seed),
+            'version': 'common_postcvpr_mesh_slip_v3', 'seed': int(cfg.validation.seed),
             'material': dict(cfg.validation.material),
             'data': [{key: e[key] for key in ('id', 'garment', 'n_steps', 'sha256')} for e in self.records],
             'assets': {key: file_record(Path(DEFAULTS.aux_data) / dataset_cfg[key])['sha256']
@@ -163,6 +176,8 @@ class FixedValidation:
             'criteria': OmegaConf.to_container(vcfg.criterions, resolve=True),
             'timesteps': [float(vcfg.runner.postcvpr.initial_ts), float(vcfg.runner.postcvpr.regular_ts)],
             'geometry_source_sha256': file_record(Path(__file__).parent / 'contact_geometry.py')['sha256'],
+            'friction_kinematics_source_sha256': file_record(Path(__file__).parent / 'friction_contact.py')['sha256'],
+            'slip_contact_distance_m': .002,
             'metric_source_sha256': file_record(__file__)['sha256'],
         }
         # Data paths are recorded separately; semantic signature uses content.

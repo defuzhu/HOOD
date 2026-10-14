@@ -35,6 +35,8 @@ class TrainingTensorBoard:
             if key in row:
                 self.scalar('train_state/' + key, row[key], row['global_step'])
         for key, value in row.items():
+            if key.startswith('friction_') and not key.endswith(('_loss_mean', '_loss_last')):
+                self.scalar('friction/' + key, value, row['global_step'])
             if key.startswith(('collision_raw_loss_', 'contact_', 'barrier_')):
                 self.scalar('contact/' + key, value, row['global_step'])
 
