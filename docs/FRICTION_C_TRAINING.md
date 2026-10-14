@@ -58,3 +58,15 @@ python validate_experiment.py \
 
 以上是物理机制推测，不是已验证的改善。滑移减少需同时检查接触比例、穿透、
 拉伸和视频；不以总 loss 或摩擦增量势下降直接判断成功。
+
+## 本次运行方式
+
+`scripts/run_friction_c_experiment.py` 固定先执行本次 C 组 60000 batch 训练，只有
+确认训练正常完成且 global_step=60000 后，才对旧 A checkpoint 执行相同十组协议，
+最后调用 compare_experiments.py 自动输出 A/C 对比。任一阶段失败则停止，不自动
+重启训练，不用 exploratory 绕过可比性检查。流程状态保存在
+`$HOOD_DATA/experiments/workflows/friction_c_*/status.json`。
+这使旧 A 的重新评价排在训练后，避免它与本次训练同时争抢同一 GPU。
+
+代码运行在单独冻结的工作树，不修改日常 notebook。TensorBoard 沿用现有
+127.0.0.1:6006 服务。GPU 与其他用户共享，因此速度/显存指标需注明共享环境。
