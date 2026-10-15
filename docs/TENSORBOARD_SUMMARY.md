@@ -34,3 +34,18 @@ ssh -N -L 6007:127.0.0.1:6007 zhudf@服务器地址
 输出必须是新目录，防止重启时重复写历史点；重建时换新目录并让 TensorBoard 指向新目录。
 脚本不自动发现新的独立评价目录；旧模型完成十组重评后可把该目录作为单独 label 加入。
 CSV 是原始记录，精简 events 可随时重建。
+
+## 已部署（2026-10-15）
+
+- CSV 镜像服务：`hood-summary-csv-20261015.service`
+- 精简 TensorBoard：`hood-tensorboard-summary.service`，127.0.0.1:6007
+- 镜像目录：`/home/zhudf/data/hood_data/tensorboard_summary_20261015`
+- 当前实际标量数：baseline 10、modified_contact 17、friction_C 52。
+  原视图对应为 193、405、1179；历史缺失指标不补零，所以三组数量不同。
+- Text 页已验证包含 `00_read_me`；标量说明元数据也已写入，但当前服务的标量
+  tags API 未返回描述文字，因此阅读备注以 Text 页为准，不依赖卡片悬浮提示。
+- C 的核心三条 50000 步穿透曲线值为 2.588067%，已与 CSV 核对。
+
+本次匹配50000步的统一轨迹补算、分析报告、曲线和来源哈希在：
+`$HOOD_DATA/experiments/comparisons/friction_threeway_step50000_20261015/`。
+这份阶段性分析只比较共同三条T-shirt动作，不混合额外动作或不同训练预算。
