@@ -73,7 +73,8 @@ def main():
         if pd.notna(value) and step>seen[label].get(tag,-1):
             # torch 2.0 SummaryWriter.add_scalar has no description argument.
             summary=Summary(value=[Summary.Value(tag=tag, simple_value=float(value),
-                              metadata=SummaryMetadata(summary_description=description))])
+                              metadata=SummaryMetadata(summary_description=description,
+                                  plugin_data=SummaryMetadata.PluginData(plugin_name='scalars')))])
             writers[label].file_writer.add_summary(summary,int(step))
             seen[label][tag]=step
     try:
